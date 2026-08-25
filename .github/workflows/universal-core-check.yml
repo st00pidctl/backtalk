@@ -25,6 +25,31 @@ jobs:
             backtalk/core_probe.py \
             backtalk/core_smoke.py \
             examples/custom_core.py
+      - name: Verify Codex headless permission mapping
+        run: |
+          python - <<'PY'
+          from backtalk.config import CFG
+          from backtalk.core_codex import CodexBrain
+
+          original = CFG.get("permission_mode")
+          try:
+              CFG["permission_mode"] = "ask"
+              args = CodexBrain()._permission_args()
+              assert args == [
+                  "--sandbox", "workspace-write",
+                  "-c", 'approval_policy="never"',
+              ]
+              assert "--approve-for-me" not in args
+
+              CFG["permission_mode"] = "read-only"
+              args = CodexBrain()._permission_args()
+              assert args == [
+                  "--sandbox", "read-only",
+                  "-c", 'approval_policy="never"',
+              ]
+          finally:
+              CFG["permission_mode"] = original
+          PY
       - name: Verify drop-in adapter loader
         run: |
           python - <<'PY'
