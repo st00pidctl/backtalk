@@ -94,6 +94,8 @@ body[data-state="listening"] .pulse-b { animation: wave 1.2s .38s ease-out infin
 .turn:last-child { border-bottom:0; margin-bottom:0; padding-bottom:0; }
 .turn-label { margin:0 0 6px; color:var(--muted); font-size:.65rem; font-weight:780; letter-spacing:.13em; }
 .turn.user .turn-label { color:#91b9a8; }
+.turn.error .turn-label { color:var(--danger); }
+.turn.error p:last-child { color:#ffc2c2; }
 .turn p:last-child { margin:0; line-height:1.48; font-size:.96rem; }
 .turn.agent p:last-child { color:#f3fff8; }
 
@@ -103,7 +105,8 @@ body[data-state="listening"] .pulse-b { animation: wave 1.2s .38s ease-out infin
   color:#07100d; background:linear-gradient(145deg, #a8ffd2, #53e99c 62%, #33c87d);
   box-shadow:0 16px 55px rgba(31,175,104,.2), inset 0 1px 0 rgba(255,255,255,.62);
   display:grid; align-content:center; justify-items:center; gap:8px;
-  user-select:none; touch-action:none; cursor:pointer; transition:transform .13s ease, filter .13s ease;
+  user-select:none; -webkit-user-select:none; -webkit-touch-callout:none; touch-action:none;
+  cursor:pointer; transition:transform .13s ease, filter .13s ease;
 }
 .talk:active, .talk.recording { transform:scale(.94); filter:saturate(1.18) brightness(.94); }
 .talk:disabled { opacity:.38; filter:grayscale(.4); cursor:not-allowed; }
