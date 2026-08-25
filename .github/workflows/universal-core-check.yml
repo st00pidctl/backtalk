@@ -52,6 +52,107 @@ jobs:
           finally:
               CFG["permission_mode"] = original
           PY
+      - name: Verify stale Codex thread falls back to fresh thread
+        run: |
+          python - <<'PY'
+          import asyncio
+          import json
+          import tempfile
+          from pathlib import Path
+
+          import backtalk.core_codex as core_codex
+          from backtalk.config import CFG
+          from backtalk.core_codex import CodexBrain
+
+          class FakeStdin:
+              def write(self, data):
+                  self.data = data
+              async def drain(self):
+                  return None
+              def close(self):
+                  return None
+
+          class FakeStdout:
+              def __init__(self, events):
+                  self.events = [json.dumps(event).encode() + b"\n" for event in events]
+                  self.index = 0
+              def __aiter__(self):
+                  return self
+              async def __anext__(self):
+                  if self.index >= len(self.events):
+                      raise StopAsyncIteration
+                  value = self.events[self.index]
+                  self.index += 1
+                  return value
+
+          class FakeStderr:
+              async def read(self):
+                  return b""
+
+          class FakeProc:
+              def __init__(self, events):
+                  self.stdin = FakeStdin()
+                  self.stdout = FakeStdout(events)
+                  self.stderr = FakeStderr()
+                  self.returncode = None
+              async def wait(self):
+                  self.returncode = 0
+                  return 0
+              def terminate(self):
+                  self.returncode = 0
+              def kill(self):
+                  self.returncode = 0
+
+          async def main():
+              saved = {key: CFG.get(key) for key in (
+                  "signals_dir", "agent_dir", "extra_dirs", "resume_last_session"
+              )}
+              with tempfile.TemporaryDirectory() as td:
+                  CFG["signals_dir"] = td
+                  CFG["agent_dir"] = td
+                  CFG["extra_dirs"] = []
+                  CFG["resume_last_session"] = True
+                  brain = CodexBrain(resume_id="stale-thread")
+                  brain.session_file = str(Path(td) / ".backtalk_session_codex")
+                  Path(brain.session_file).write_text("stale-thread")
+
+                  attempts = []
+                  responses = [
+                      FakeProc([{
+                          "type": "error",
+                          "error": {"message": "thread/resume failed: no rollout found for thread id stale-thread"},
+                      }]),
+                      FakeProc([
+                          {"type": "thread.started", "thread_id": "fresh-thread"},
+                          {"type": "item.completed", "item": {"type": "agent_message", "text": "RECOVERED"}},
+                          {"type": "turn.completed", "usage": {}},
+                      ]),
+                  ]
+
+                  original_exec = core_codex.asyncio.create_subprocess_exec
+                  async def fake_exec(*args, **kwargs):
+                      attempts.append(args)
+                      return responses.pop(0)
+                  core_codex.asyncio.create_subprocess_exec = fake_exec
+                  try:
+                      output = []
+                      async for text in brain.ask_stream("hello"):
+                          output.append(text)
+                  finally:
+                      core_codex.asyncio.create_subprocess_exec = original_exec
+                      for key, value in saved.items():
+                          if value is None:
+                              CFG.pop(key, None)
+                          else:
+                              CFG[key] = value
+
+                  assert output == ["RECOVERED"], output
+                  assert "resume" in attempts[0]
+                  assert "resume" not in attempts[1]
+                  assert Path(brain.session_file).read_text().strip() == "fresh-thread"
+
+          asyncio.run(main())
+          PY
       - name: Verify drop-in adapter loader
         run: |
           python - <<'PY'
