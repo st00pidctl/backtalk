@@ -72,14 +72,21 @@ class CodexBrain(AgentCore):
         log(f"[core:codex] {version or 'binary ready'}")
 
     def _permission_args(self) -> list[str]:
+        """Map Backtalk permission semantics to headless Codex exec.
+
+        Codex exec is noninteractive, so Backtalk cannot relay Codex's native
+        approval prompt. Keep every Codex turn sandboxed and explicitly disable
+        escalation. A denied action is returned to the model as a tool failure
+        rather than blocking forever waiting for terminal input.
+
+        Codex 0.114.0 does not accept --approve-for-me on `codex exec`, which
+        is why this uses stable sandbox/config flags instead of that newer or
+        surface-specific option.
+        """
         mode = str(CFG.get("permission_mode") or self.permission_mode)
-        if mode in ("read-only", "readonly", "read_only"):
-            return ["--sandbox", "read-only"]
-        # Backtalk is headless while the model runs, so an interactive CLI
-        # approval prompt cannot be relayed reliably. Codex's auto reviewer
-        # keeps workspace-write sandboxing and on-request review without
-        # requiring an unsandboxed host mode.
-        return ["--approve-for-me"]
+        sandbox = "read-only" if mode in ("read-only", "readonly", "read_only") \
+            else "workspace-write"
+        return ["--sandbox", sandbox, "-c", 'approval_policy="never"']
 
     def _command(self) -> list[str]:
         cmd = [self.binary, "exec", "--json", "--skip-git-repo-check",
