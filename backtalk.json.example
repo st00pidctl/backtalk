@@ -3,5 +3,13 @@
   "name": "Assistant",
   "ptt_key": "home",
   "voice": "bm_lewis",
-  "stt_model": "small.en"
+  "stt_model": "small.en",
+  "permission_mode": "ask",
+  "resume_last_session": true,
+  "core": {
+    "provider": "codex",
+    "binary": "codex",
+    "model": "",
+    "extra_args": []
+  }
 }

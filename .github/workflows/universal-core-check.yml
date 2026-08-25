@@ -1,0 +1,176 @@
+name: universal-core-check
+
+on:
+  push:
+    branches: [universal-core-architecture]
+  pull_request:
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile universal core modules
+        run: |
+          python -m py_compile \
+            backtalk/brain.py \
+            backtalk/core_base.py \
+            backtalk/core_registry.py \
+            backtalk/core_claude.py \
+            backtalk/core_codex.py \
+            backtalk/core_generic.py \
+            backtalk/core_probe.py \
+            backtalk/core_smoke.py \
+            backtalk/endpoint_server.py \
+            backtalk/endpoint_headless.py \
+            examples/custom_core.py
+      - name: Verify Codex headless permission mapping
+        run: |
+          python - <<'PY'
+          from backtalk.config import CFG
+          from backtalk.core_codex import CodexBrain
+
+          original = CFG.get("permission_mode")
+          try:
+              CFG["permission_mode"] = "ask"
+              args = CodexBrain()._permission_args()
+              assert args == [
+                  "--sandbox", "workspace-write",
+                  "-c", 'approval_policy="never"',
+              ]
+              assert "--approve-for-me" not in args
+
+              CFG["permission_mode"] = "read-only"
+              args = CodexBrain()._permission_args()
+              assert args == [
+                  "--sandbox", "read-only",
+                  "-c", 'approval_policy="never"',
+              ]
+          finally:
+              CFG["permission_mode"] = original
+          PY
+      - name: Verify stale Codex thread falls back to fresh thread
+        run: |
+          python - <<'PY'
+          import asyncio
+          import json
+          import tempfile
+          from pathlib import Path
+
+          import backtalk.core_codex as core_codex
+          from backtalk.config import CFG
+          from backtalk.core_codex import CodexBrain
+
+          class FakeStdin:
+              def write(self, data):
+                  self.data = data
+              async def drain(self):
+                  return None
+              def close(self):
+                  return None
+
+          class FakeStdout:
+              def __init__(self, events):
+                  self.events = [json.dumps(event).encode() + b"\n" for event in events]
+                  self.index = 0
+              def __aiter__(self):
+                  return self
+              async def __anext__(self):
+                  if self.index >= len(self.events):
+                      raise StopAsyncIteration
+                  value = self.events[self.index]
+                  self.index += 1
+                  return value
+
+          class FakeStderr:
+              async def read(self):
+                  return b""
+
+          class FakeProc:
+              def __init__(self, events):
+                  self.stdin = FakeStdin()
+                  self.stdout = FakeStdout(events)
+                  self.stderr = FakeStderr()
+                  self.returncode = None
+              async def wait(self):
+                  self.returncode = 0
+                  return 0
+              def terminate(self):
+                  self.returncode = 0
+              def kill(self):
+                  self.returncode = 0
+
+          async def main():
+              saved = {key: CFG.get(key) for key in (
+                  "signals_dir", "agent_dir", "extra_dirs", "resume_last_session"
+              )}
+              with tempfile.TemporaryDirectory() as td:
+                  CFG["signals_dir"] = td
+                  CFG["agent_dir"] = td
+                  CFG["extra_dirs"] = []
+                  CFG["resume_last_session"] = True
+                  brain = CodexBrain(resume_id="stale-thread")
+                  brain.session_file = str(Path(td) / ".backtalk_session_codex")
+                  Path(brain.session_file).write_text("stale-thread")
+
+                  attempts = []
+                  responses = [
+                      FakeProc([{
+                          "type": "error",
+                          "error": {"message": "thread/resume failed: no rollout found for thread id stale-thread"},
+                      }]),
+                      FakeProc([
+                          {"type": "thread.started", "thread_id": "fresh-thread"},
+                          {"type": "item.completed", "item": {"type": "agent_message", "text": "RECOVERED"}},
+                          {"type": "turn.completed", "usage": {}},
+                      ]),
+                  ]
+
+                  original_exec = core_codex.asyncio.create_subprocess_exec
+                  async def fake_exec(*args, **kwargs):
+                      attempts.append(args)
+                      return responses.pop(0)
+                  core_codex.asyncio.create_subprocess_exec = fake_exec
+                  try:
+                      output = []
+                      async for text in brain.ask_stream("hello"):
+                          output.append(text)
+                  finally:
+                      core_codex.asyncio.create_subprocess_exec = original_exec
+                      for key, value in saved.items():
+                          if value is None:
+                              CFG.pop(key, None)
+                          else:
+                              CFG[key] = value
+
+                  assert output == ["RECOVERED"], output
+                  assert "resume" in attempts[0]
+                  assert "resume" not in attempts[1]
+                  assert Path(brain.session_file).read_text().strip() == "fresh-thread"
+
+          asyncio.run(main())
+          PY
+      - name: Verify drop-in adapter loader
+        run: |
+          python - <<'PY'
+          from backtalk.core_registry import load_core_class
+          cls = load_core_class(
+              "example",
+              adapter="examples/custom_core.py:MyRuntimeBrain",
+          )
+          assert cls.__name__ == "MyRuntimeBrain"
+          PY
+      - name: Check browser endpoint assets
+        run: |
+          test -s endpoint/index.html
+          test -s endpoint/styles.css
+          test -s endpoint/app.js
+          test -s endpoint/sw.js
+          python -m json.tool endpoint/manifest.webmanifest >/dev/null
+          node --check endpoint/app.js
+          node --check endpoint/sw.js
+      - name: Validate example JSON
+        run: python -m json.tool backtalk.json.example >/dev/null

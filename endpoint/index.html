@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+  <meta name="theme-color" content="#0b1110">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Agent">
+  <title>Agent Endpoint</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="stylesheet" href="/styles.css?v=2">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">REMOTE ENDPOINT</p>
+        <h1 id="agent-name">Assistant</h1>
+      </div>
+      <div class="connection" id="connection"><span class="dot"></span><span>Connecting</span></div>
+    </header>
+
+    <section class="presence" aria-live="polite">
+      <div class="orb-wrap">
+        <div class="orb" id="orb"><div class="orb-core"></div></div>
+        <div class="pulse pulse-a"></div>
+        <div class="pulse pulse-b"></div>
+      </div>
+      <p class="state" id="state">STARTING</p>
+      <p class="route" id="route">agent host · provider</p>
+    </section>
+
+    <section class="conversation" id="conversation">
+      <div class="empty" id="empty-state">
+        <p>Your microphone stays on this device.</p>
+        <p>Speech, memory, reasoning, and voice live on the agent host.</p>
+      </div>
+    </section>
+
+    <section class="controls">
+      <button class="interrupt" id="interrupt" type="button" disabled>Interrupt</button>
+      <button class="talk" id="talk" type="button" aria-label="Hold to talk">
+        <span class="talk-icon" aria-hidden="true"></span>
+        <span class="talk-label">HOLD TO TALK</span>
+      </button>
+      <p class="hint" id="hint">Hold to talk. First use may ask for microphone access.</p>
+    </section>
+  </main>
+  <script src="/app.js?v=2" defer></script>
+</body>
+</html>
