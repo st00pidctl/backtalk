@@ -39,7 +39,7 @@ function addTurn(role, text) {
   wrap.className = `turn ${role}`;
   const label = document.createElement("p");
   label.className = "turn-label";
-  label.textContent = role === "user" ? "YOU" : "PETER";
+  label.textContent = role === "user" ? "YOU" : "AGENT";
   const body = document.createElement("p");
   body.textContent = text;
   wrap.append(label, body);
@@ -144,7 +144,7 @@ async function sendRecording() {
   busy = true;
   talkButton.disabled = true;
   setVisualState("thinking");
-  hintEl.textContent = "Peter is working…";
+  hintEl.textContent = "Agent is working…";
 
   try {
     const type = recorder?.mimeType || chunks[0]?.type || "application/octet-stream";
@@ -199,7 +199,7 @@ async function pollStatus() {
     const status = await response.json();
     setConnection(Boolean(status.ok));
     nameEl.textContent = status.name || "Assistant";
-    routeEl.textContent = `${status.host || "Peter"} · ${status.provider_name || status.provider || "core"}`;
+    routeEl.textContent = `${status.host || "agent host"} · ${status.provider_name || status.provider || "core"}`;
     if (!busy && !currentSource && recorder?.state !== "recording") setVisualState(status.state || "idle");
   } catch (_) {
     setConnection(false, "Reconnecting");
