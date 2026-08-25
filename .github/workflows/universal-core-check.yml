@@ -23,6 +23,17 @@ jobs:
             backtalk/core_codex.py \
             backtalk/core_generic.py \
             backtalk/core_probe.py \
-            backtalk/core_smoke.py
+            backtalk/core_smoke.py \
+            examples/custom_core.py
+      - name: Verify drop-in adapter loader
+        run: |
+          python - <<'PY'
+          from backtalk.core_registry import load_core_class
+          cls = load_core_class(
+              "example",
+              adapter="examples/custom_core.py:MyRuntimeBrain",
+          )
+          assert cls.__name__ == "MyRuntimeBrain"
+          PY
       - name: Validate example JSON
         run: python -m json.tool backtalk.json.example >/dev/null
