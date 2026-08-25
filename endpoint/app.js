@@ -12,18 +12,25 @@ const nameEl = $("agent-name");
 
 let stream = null;
 let recorder = null;
-let chunks = [];
-let pressStarted = 0;
 let busy = false;
 let audioContext = null;
 let currentSource = null;
 let statusTimer = null;
+let activePointerId = null;
+let holdActive = false;
+let startGeneration = 0;
+let maxRecordingTimer = null;
+let lastServerState = "idle";
 
 function setVisualState(state) {
   const normalized = String(state || "idle").toLowerCase();
   document.body.dataset.state = normalized;
   stateEl.textContent = normalized.toUpperCase();
-  interruptButton.disabled = !["thinking", "speaking", "listening"].includes(normalized);
+  interruptButton.disabled = !["thinking", "speaking", "listening", "warming"].includes(normalized);
+}
+
+function setHint(message) {
+  hintEl.textContent = message || "";
 }
 
 function setConnection(ok, label = ok ? "Connected" : "Offline") {
@@ -34,12 +41,12 @@ function setConnection(ok, label = ok ? "Connected" : "Offline") {
 }
 
 function addTurn(role, text) {
-  if (emptyEl) emptyEl.remove();
+  if (emptyEl?.isConnected) emptyEl.remove();
   const wrap = document.createElement("div");
   wrap.className = `turn ${role}`;
   const label = document.createElement("p");
   label.className = "turn-label";
-  label.textContent = role === "user" ? "YOU" : "AGENT";
+  label.textContent = role === "user" ? "YOU" : role === "error" ? "ERROR" : "AGENT";
   const body = document.createElement("p");
   body.textContent = text;
   wrap.append(label, body);
@@ -49,15 +56,15 @@ function addTurn(role, text) {
 
 function pickMimeType() {
   const choices = [
-    "audio/webm;codecs=opus",
     "audio/mp4",
+    "audio/webm;codecs=opus",
     "audio/webm",
   ];
   return choices.find((type) => window.MediaRecorder?.isTypeSupported?.(type)) || "";
 }
 
 async function ensureMic() {
-  if (stream) return stream;
+  if (stream && stream.getAudioTracks().some((track) => track.readyState === "live")) return stream;
   if (!navigator.mediaDevices?.getUserMedia) {
     throw new Error("Microphone access is unavailable. Open this endpoint over HTTPS.");
   }
@@ -97,98 +104,213 @@ async function playAudio(url) {
   source.connect(audioContext.destination);
   source.onended = () => {
     if (currentSource === source) currentSource = null;
-    setVisualState("idle");
+    setVisualState(lastServerState === "speaking" ? "idle" : lastServerState);
+    if (!busy) setHint("Hold to talk again.");
   };
   currentSource = source;
   setVisualState("speaking");
+  setHint("Playing reply...");
   source.start();
 }
 
-async function startRecording(event) {
-  event.preventDefault();
-  if (busy || talkButton.disabled) return;
-  try {
-    await unlockAudio();
-    const mic = await ensureMic();
-    chunks = [];
-    const mimeType = pickMimeType();
-    recorder = mimeType ? new MediaRecorder(mic, { mimeType }) : new MediaRecorder(mic);
-    recorder.ondataavailable = (e) => { if (e.data?.size) chunks.push(e.data); };
-    recorder.onstop = sendRecording;
-    recorder.start(120);
-    pressStarted = performance.now();
-    talkButton.classList.add("recording");
-    hintEl.textContent = "Listening… release when finished.";
-    setVisualState("listening");
-    try { talkButton.setPointerCapture(event.pointerId); } catch (_) {}
-  } catch (error) {
-    hintEl.textContent = error.message || "Could not access microphone.";
-    setVisualState("idle");
-  }
+function clearRecordingWatchdog() {
+  if (maxRecordingTimer) clearTimeout(maxRecordingTimer);
+  maxRecordingTimer = null;
 }
 
-function stopRecording(event) {
-  event?.preventDefault?.();
+function clearHoldVisual() {
+  holdActive = false;
+  activePointerId = null;
   talkButton.classList.remove("recording");
+  clearRecordingWatchdog();
+}
+
+function stopRecorderIfActive() {
+  clearHoldVisual();
   if (!recorder || recorder.state === "inactive") return;
+  setHint("Sending audio to agent...");
+  try {
+    recorder.requestData?.();
+  } catch (_) {}
   recorder.stop();
 }
 
-async function sendRecording() {
-  const elapsed = performance.now() - pressStarted;
-  if (elapsed < 250 || chunks.length === 0) {
+async function beginRecording(event) {
+  event.preventDefault();
+  if (busy || talkButton.disabled || holdActive) return;
+
+  holdActive = true;
+  activePointerId = event.pointerId ?? null;
+  const generation = ++startGeneration;
+  talkButton.classList.add("recording");
+  setVisualState("listening");
+
+  try {
+    if (event.pointerId !== undefined) talkButton.setPointerCapture(event.pointerId);
+  } catch (_) {}
+
+  const micWasReady = Boolean(stream && stream.getAudioTracks().some((track) => track.readyState === "live"));
+  setHint(micWasReady ? "Starting recorder... keep holding." : "Enabling microphone... keep holding.");
+
+  try {
+    await unlockAudio();
+    const mic = await ensureMic();
+
+    if (generation !== startGeneration || !holdActive) {
+      clearHoldVisual();
+      setVisualState("idle");
+      setHint("Microphone ready. Hold again to talk.");
+      return;
+    }
+
+    // iOS may consume the original pointer gesture while showing the microphone
+    // permission sheet. Do not start an invisible recording after that prompt.
+    if (!micWasReady) {
+      clearHoldVisual();
+      setVisualState("idle");
+      setHint("Microphone ready. Hold again to talk.");
+      return;
+    }
+
+    const mimeType = pickMimeType();
+    const localChunks = [];
+    const localRecorder = mimeType ? new MediaRecorder(mic, { mimeType }) : new MediaRecorder(mic);
+    const startedAt = performance.now();
+    recorder = localRecorder;
+
+    localRecorder.ondataavailable = (e) => {
+      if (e.data?.size) localChunks.push(e.data);
+    };
+    localRecorder.onerror = (e) => {
+      const detail = e?.error?.message || "MediaRecorder failed.";
+      clearHoldVisual();
+      busy = false;
+      recorder = null;
+      setVisualState("idle");
+      setHint(detail);
+      addTurn("error", detail);
+    };
+    localRecorder.onstop = () => {
+      if (recorder === localRecorder) recorder = null;
+      void sendRecording(localRecorder, localChunks, startedAt);
+    };
+
+    localRecorder.start(150);
+    setHint(`Listening${mimeType ? ` (${mimeType.split(";")[0]})` : ""}... release anywhere when finished.`);
+    maxRecordingTimer = setTimeout(() => {
+      if (recorder === localRecorder && localRecorder.state !== "inactive") {
+        setHint("60 second recording limit reached. Sending...");
+        stopRecorderIfActive();
+      }
+    }, 60000);
+  } catch (error) {
+    clearHoldVisual();
+    recorder = null;
     setVisualState("idle");
-    hintEl.textContent = "Press and hold. Release when finished.";
+    const message = error?.message || "Could not access microphone.";
+    setHint(message);
+    addTurn("error", message);
+  }
+}
+
+function releaseRecording(event) {
+  if (event?.pointerId !== undefined && activePointerId !== null && event.pointerId !== activePointerId) return;
+  event?.preventDefault?.();
+  holdActive = false;
+  activePointerId = null;
+  talkButton.classList.remove("recording");
+  clearRecordingWatchdog();
+
+  if (recorder && recorder.state !== "inactive") {
+    setHint("Sending audio to agent...");
+    try { recorder.requestData?.(); } catch (_) {}
+    recorder.stop();
+  } else if (!busy) {
+    setVisualState("idle");
+  }
+}
+
+async function sendRecording(localRecorder, localChunks, startedAt) {
+  const elapsed = performance.now() - startedAt;
+  clearRecordingWatchdog();
+  talkButton.classList.remove("recording");
+
+  if (elapsed < 250 || localChunks.length === 0) {
+    setVisualState("idle");
+    setHint(localChunks.length === 0 ? "No audio was captured. Hold a little longer and try again." : "That press was too short. Hold and speak, then release.");
     return;
   }
+
   busy = true;
   talkButton.disabled = true;
   setVisualState("thinking");
-  hintEl.textContent = "Agent is working…";
+
+  const type = localRecorder?.mimeType || localChunks[0]?.type || "application/octet-stream";
+  const blob = new Blob(localChunks, { type });
+  const seconds = Math.max(0.1, elapsed / 1000).toFixed(1);
+  setHint(`Uploaded ${seconds}s recording. Transcribing and thinking...`);
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 180000);
 
   try {
-    const type = recorder?.mimeType || chunks[0]?.type || "application/octet-stream";
-    const blob = new Blob(chunks, { type });
     const response = await fetch("/api/turn", {
       method: "POST",
       headers: { "Content-Type": type },
       body: blob,
+      signal: controller.signal,
     });
-    const payload = await response.json();
+    let payload = null;
+    try {
+      payload = await response.json();
+    } catch (_) {
+      throw new Error(`Endpoint returned ${response.status} without JSON.`);
+    }
     if (!response.ok) throw new Error(payload.error || `Endpoint returned ${response.status}`);
+    if (!payload.transcript) throw new Error("Agent host returned no transcript.");
+    if (!payload.reply) throw new Error("Agent core returned no reply.");
+
     addTurn("user", payload.transcript);
     addTurn("agent", payload.reply);
-    hintEl.textContent = "";
+    setHint("Reply received. Starting audio...");
     await playAudio(payload.audio_url);
   } catch (error) {
     setVisualState("idle");
-    hintEl.textContent = error.message || "The turn failed.";
+    const message = error?.name === "AbortError"
+      ? "The agent did not finish this turn within 3 minutes."
+      : (error?.message || "The turn failed.");
+    setHint(message);
+    addTurn("error", message);
   } finally {
+    clearTimeout(timeout);
     busy = false;
     talkButton.disabled = false;
-    recorder = null;
-    chunks = [];
-    if (!currentSource && stateEl.textContent === "IDLE") {
-      hintEl.textContent = "Press and hold. Release when finished.";
+    if (!currentSource && stateEl.textContent === "IDLE" && !hintEl.textContent) {
+      setHint("Hold to talk again.");
     }
   }
 }
 
 async function interrupt() {
   try {
+    ++startGeneration;
+    clearHoldVisual();
     if (currentSource) {
       try { currentSource.stop(); } catch (_) {}
       currentSource = null;
     }
-    if (recorder && recorder.state !== "inactive") recorder.stop();
+    if (recorder && recorder.state !== "inactive") {
+      try { recorder.stop(); } catch (_) {}
+    }
+    recorder = null;
     await fetch("/api/interrupt", { method: "POST" });
   } catch (_) {
-    // A local audio cut should still feel immediate even if the network call fails.
+    // A local cut should still feel immediate if the network interrupt fails.
   } finally {
     busy = false;
     talkButton.disabled = false;
     setVisualState("idle");
-    hintEl.textContent = "Interrupted. Hold to talk again.";
+    setHint("Interrupted. Hold to talk again.");
   }
 }
 
@@ -200,25 +322,47 @@ async function pollStatus() {
     setConnection(Boolean(status.ok));
     nameEl.textContent = status.name || "Assistant";
     routeEl.textContent = `${status.host || "agent host"} · ${status.provider_name || status.provider || "core"}`;
-    if (!busy && !currentSource && recorder?.state !== "recording") setVisualState(status.state || "idle");
+    lastServerState = status.state || "idle";
+
+    // While a request is in flight, the server state is more useful than the
+    // client's generic "thinking" state. It tells us whether Peter received it.
+    if (busy && ["listening", "thinking", "speaking", "warming"].includes(lastServerState)) {
+      setVisualState(lastServerState);
+      if (lastServerState === "listening") setHint("Agent host received audio. Transcribing...");
+      if (lastServerState === "thinking") setHint("Transcript reached the core. Thinking...");
+      if (lastServerState === "speaking") setHint("Generating reply audio...");
+    } else if (!busy && !currentSource && recorder?.state !== "recording" && !holdActive) {
+      setVisualState(lastServerState);
+    }
   } catch (_) {
     setConnection(false, "Reconnecting");
   }
 }
 
-talkButton.addEventListener("pointerdown", startRecording);
-talkButton.addEventListener("pointerup", stopRecording);
-talkButton.addEventListener("pointercancel", stopRecording);
-talkButton.addEventListener("lostpointercapture", stopRecording);
+talkButton.addEventListener("pointerdown", beginRecording, { passive: false });
+window.addEventListener("pointerup", releaseRecording, { passive: false });
+window.addEventListener("pointercancel", releaseRecording, { passive: false });
+talkButton.addEventListener("lostpointercapture", (event) => {
+  if (holdActive) releaseRecording(event);
+});
+talkButton.addEventListener("contextmenu", (event) => event.preventDefault());
 interruptButton.addEventListener("click", interrupt);
 
+window.addEventListener("blur", () => {
+  if (holdActive || (recorder && recorder.state !== "inactive")) releaseRecording();
+});
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden && (holdActive || (recorder && recorder.state !== "inactive"))) releaseRecording();
+});
 window.addEventListener("pagehide", () => {
+  ++startGeneration;
+  clearRecordingWatchdog();
   if (stream) stream.getTracks().forEach((track) => track.stop());
 });
 
 if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("/sw.js").catch(() => {});
+  navigator.serviceWorker.register("/sw.js", { updateViaCache: "none" }).catch(() => {});
 }
 
 pollStatus();
-statusTimer = setInterval(pollStatus, 1300);
+statusTimer = setInterval(pollStatus, 1000);
