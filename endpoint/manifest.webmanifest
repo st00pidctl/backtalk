@@ -1,6 +1,6 @@
 {
   "name": "Universal Agent Endpoint",
-  "short_name": "Peter",
+  "short_name": "Agent",
   "description": "Private tailnet voice endpoint for Universal Fullstack Agent",
   "start_url": "/",
   "scope": "/",
