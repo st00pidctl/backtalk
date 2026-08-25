@@ -25,6 +25,7 @@ jobs:
             backtalk/core_probe.py \
             backtalk/core_smoke.py \
             backtalk/endpoint_server.py \
+            backtalk/endpoint_headless.py \
             examples/custom_core.py
       - name: Verify Codex headless permission mapping
         run: |
