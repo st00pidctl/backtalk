@@ -24,6 +24,7 @@ jobs:
             backtalk/core_generic.py \
             backtalk/core_probe.py \
             backtalk/core_smoke.py \
+            backtalk/endpoint_server.py \
             examples/custom_core.py
       - name: Verify Codex headless permission mapping
         run: |
@@ -60,5 +61,14 @@ jobs:
           )
           assert cls.__name__ == "MyRuntimeBrain"
           PY
+      - name: Check browser endpoint assets
+        run: |
+          test -s endpoint/index.html
+          test -s endpoint/styles.css
+          test -s endpoint/app.js
+          test -s endpoint/sw.js
+          python -m json.tool endpoint/manifest.webmanifest >/dev/null
+          node --check endpoint/app.js
+          node --check endpoint/sw.js
       - name: Validate example JSON
         run: python -m json.tool backtalk.json.example >/dev/null
