@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Compatibility facade for the voice loop.
 
-`main.py` still imports WarmBrain. WarmBrain now delegates to the runtime
-selected by `core.provider`, so audio/UI code never needs provider branches.
+`main.py` still imports WarmBrain. WarmBrain delegates to the runtime selected
+by `core.provider`, or to an explicit drop-in class selected by `core.adapter`.
+Audio and UI code never needs provider branches.
 """
 from __future__ import annotations
 
@@ -23,7 +24,7 @@ class WarmBrain:
 
     def __init__(self, model: str | None = None, can_use_tool=None,
                  resume_id: str | None = None):
-        cls = load_core_class(PROVIDER)
+        cls = load_core_class(PROVIDER, adapter=_CORE_CFG.get("adapter"))
         selected_model = model
         if selected_model is None:
             if PROVIDER == "claude":
@@ -33,8 +34,6 @@ class WarmBrain:
         self._impl = cls(model=selected_model,
                          can_use_tool=can_use_tool,
                          resume_id=resume_id)
-        # Non-Claude cores own provider-specific session paths. Keep the
-        # public SESSION_FILE and the implementation aligned.
         if hasattr(self._impl, "session_file"):
             self._impl.session_file = SESSION_FILE
 
