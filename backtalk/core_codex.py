@@ -117,6 +117,25 @@ class CodexBrain(AgentCore):
         except OSError as exc:
             log(f"[core:codex] could not persist thread id: {exc}")
 
+    def _clear_resume_state(self):
+        """Forget provider-owned thread state without touching agent memory."""
+        self._thread_id = None
+        self._resume_id = None
+        try:
+            Path(self.session_file).unlink(missing_ok=True)
+        except OSError as exc:
+            log(f"[core:codex] could not remove stale thread id: {exc}")
+
+    @staticmethod
+    def _stale_resume_error(detail: str) -> bool:
+        """Recognize Codex errors meaning a persisted thread can no longer resume."""
+        text = detail.lower()
+        return (
+            "no rollout found for thread id" in text
+            or "thread/resume failed" in text
+            or ("resume" in text and "rollout" in text and "not found" in text)
+        )
+
     def _voice_prompt(self, utterance: str) -> str:
         return (
             "You are being used through Backtalk, a spoken interface. "
@@ -149,6 +168,7 @@ class CodexBrain(AgentCore):
     async def ask_stream(self, utterance: str):
         if self._closed:
             raise CoreError("Codex core is closed")
+        attempted_resume = bool(self._thread_id or self._resume_id)
         cmd = self._command()
         log("[core:codex] " + " ".join(shlex.quote(x) for x in cmd[:-1]))
         proc = await asyncio.create_subprocess_exec(
@@ -212,6 +232,16 @@ class CodexBrain(AgentCore):
 
         if not completed:
             detail = error_text or stderr or "Codex turn ended without turn.completed"
+            if attempted_resume and self._stale_resume_error(detail):
+                stale_id = self._thread_id or self._resume_id or "unknown"
+                log(
+                    f"[core:codex] stale resume thread {stale_id}; "
+                    "starting a fresh provider thread"
+                )
+                self._clear_resume_state()
+                async for sentence in self.ask_stream(utterance):
+                    yield sentence
+                return
             raise CoreError(detail[:600])
 
         self.session["turns"] += 1
@@ -245,12 +275,7 @@ class CodexBrain(AgentCore):
     async def command(self, cmd: str) -> str:
         cmd = cmd.strip()
         if cmd == "/clear":
-            self._thread_id = None
-            self._resume_id = None
-            try:
-                Path(self.session_file).unlink(missing_ok=True)
-            except OSError:
-                pass
+            self._clear_resume_state()
             return "cleared"
         if cmd == "/compact":
             return "error: compact is not exposed by the Codex exec adapter"
