@@ -1,6 +1,6 @@
 # Pluggable agent cores
 
-Backtalk now treats the reasoning/runtime layer as a replaceable core. Audio capture, Whisper STT, TTS, push-to-talk, visual signals, and the voice console stay outside the core.
+Backtalk treats the reasoning runtime as a replaceable core. Audio capture, Whisper STT, TTS, push-to-talk, visual signals, and the voice console stay outside the core.
 
 ## Core contract
 
@@ -14,7 +14,15 @@ A core must provide these lifecycle methods through the Backtalk facade:
 
 Optional capabilities include session resume, clear/compact, model switching, effort control, context usage, and runtime-native tool permission gates. Missing optional capabilities must fail explicitly instead of pretending to work.
 
-## Select a core
+## Three integration lanes
+
+There are now three ways to attach a reasoning runtime:
+
+1. Use a built-in adapter such as `claude` or `codex`.
+2. Use `generic-cli` and point it at any executable wrapper that reads stdin and writes assistant text to stdout.
+3. Drop in a native Python adapter and select it with `core.adapter`, without editing Backtalk's registry.
+
+## Select a built-in core
 
 Add a `core` object to `backtalk.json`.
 
@@ -28,7 +36,7 @@ Add a `core` object to `backtalk.json`.
 }
 ```
 
-Claude remains supported through `claude_agent_sdk`, but it is now one adapter rather than the architecture itself.
+Claude remains supported through `claude_agent_sdk`, but it is one adapter rather than the architecture itself.
 
 ### OpenAI Codex CLI
 
@@ -47,15 +55,20 @@ Claude remains supported through `claude_agent_sdk`, but it is now one adapter r
 }
 ```
 
-An empty model means use the Codex CLI's configured/default model. Backtalk runs `codex exec --json`, captures the `thread.started` ID, and uses `codex exec resume` on later voice turns so the conversation remains warm. Codex runs in `agent_dir`, so `AGENTS.md` remains the portable identity and instruction source.
+An empty model means use the Codex CLI's configured or default model. Backtalk runs `codex exec --json`, captures the `thread.started` ID, and uses `codex exec resume` on later voice turns. Codex runs in `agent_dir`, so `AGENTS.md` remains the portable identity and instruction source.
 
 The initial Codex adapter stays sandboxed. Read-only mode maps to Codex's read-only sandbox. Other Backtalk permission modes use Codex's automatic review lane because a headless voice process cannot safely relay an interactive terminal approval prompt yet. Capability negotiation therefore reports `spoken_tool_permissions=false` for Codex.
 
-Install and authenticate Codex before launching voice:
+Install Codex before launching voice:
 
 ```bash
 curl -fsSL https://chatgpt.com/codex/install.sh | sh
-codex login
+```
+
+On a headless machine, authenticate with:
+
+```bash
+codex login --device-auth
 ```
 
 Then verify the adapter without touching the microphone:
@@ -64,7 +77,7 @@ Then verify the adapter without touching the microphone:
 uv run python -m backtalk.core_probe --check
 ```
 
-### Generic CLI
+## Generic CLI
 
 Use this for any runtime Backtalk does not know about yet.
 
@@ -78,7 +91,41 @@ Use this for any runtime Backtalk does not know about yet.
 }
 ```
 
-The wrapper receives the prompt on stdin and must write only the assistant-facing response to stdout. It may maintain its own persistent session, invoke an SDK, talk to a local daemon, or translate to another harness. This is the universal escape hatch: adding a new brain does not require changing the voice/UI layers.
+The wrapper receives the prompt on stdin and must write only the assistant-facing response to stdout. It may maintain its own persistent session, invoke an SDK, talk to a local daemon, or translate to another harness.
+
+## Drop-in Python adapter
+
+For a native integration, create a local Python file that implements the core contract and select it directly:
+
+```json
+{
+  "core": {
+    "provider": "my-runtime",
+    "adapter": "/home/me/universal-agent/custom-cores/my_runtime.py:MyRuntimeBrain"
+  }
+}
+```
+
+You can also use an importable Python module:
+
+```json
+{
+  "core": {
+    "provider": "my-runtime",
+    "adapter": "my_package.runtime:MyRuntimeBrain"
+  }
+}
+```
+
+The class constructor must accept the same integration arguments as the built-in cores:
+
+```python
+MyRuntimeBrain(model=None, can_use_tool=None, resume_id=None)
+```
+
+At minimum it must implement `start`, `ask_stream`, `interrupt`, and `stop`. Inheriting `AgentCore` from `backtalk.core_base` is recommended because it provides safe defaults for optional methods.
+
+This is the native drag-and-drop lane. The adapter file can live outside the Backtalk repository, so updating Backtalk does not overwrite the custom integration.
 
 ## Probe before launch
 
