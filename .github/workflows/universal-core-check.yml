@@ -1,0 +1,28 @@
+name: universal-core-check
+
+on:
+  push:
+    branches: [universal-core-architecture]
+  pull_request:
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile universal core modules
+        run: |
+          python -m py_compile \
+            backtalk/brain.py \
+            backtalk/core_base.py \
+            backtalk/core_registry.py \
+            backtalk/core_claude.py \
+            backtalk/core_codex.py \
+            backtalk/core_generic.py \
+            backtalk/core_probe.py \
+            backtalk/core_smoke.py
+      - name: Validate example JSON
+        run: python -m json.tool backtalk.json.example >/dev/null
