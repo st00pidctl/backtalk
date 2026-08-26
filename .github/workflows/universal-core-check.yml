@@ -2,7 +2,7 @@ name: universal-core-check
 
 on:
   push:
-    branches: [universal-core-architecture]
+    branches: [main, core-swap-v1.2]
   pull_request:
 
 jobs:
@@ -27,6 +27,11 @@ jobs:
             backtalk/endpoint_server.py \
             backtalk/endpoint_headless.py \
             examples/custom_core.py
+      - name: Verify Claude switch-safe defaults
+        run: |
+          grep -q 'CFG.get("model")' backtalk/core_claude.py
+          grep -q 'kwargs\["cli_path"\]' backtalk/core_claude.py
+          grep -q 'runtime_check.*!=.*ok' backtalk/core_probe.py
       - name: Verify Codex headless permission mapping
         run: |
           python - <<'PY'
