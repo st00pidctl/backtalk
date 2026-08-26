@@ -55,6 +55,8 @@ def main():
             print(f"  {key}: {value}")
         if data.get("error"):
             print(f"error: {data['error']}")
+    if args.check and data["runtime_check"] != "ok":
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
