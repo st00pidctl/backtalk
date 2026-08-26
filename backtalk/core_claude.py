@@ -39,7 +39,11 @@ class ClaudeBrain(AgentCore):
 
     def __init__(self, model: str | None = None, can_use_tool=None,
                  resume_id: str | None = None):
-        self.model = model or CFG["model"]
+        core_cfg = CFG.get("core") or {}
+        # Provider defaults are valid. Never require a shell-pinned Claude
+        # model merely because another provider used explicit model fields.
+        self.model = model or CFG.get("model") or core_cfg.get("model") or None
+        self.binary = str(core_cfg.get("binary") or "").strip() or None
         self._can_use_tool = can_use_tool
         self._resume_id = resume_id
         self._client: ClaudeSDKClient | None = None
@@ -51,7 +55,7 @@ class ClaudeBrain(AgentCore):
     def _options(self, resume_id=None):
         # Keep the universal adapter in the safe interactive-permission lane.
         # Backtalk's spoken can_use_tool callback performs the approval step.
-        return ClaudeAgentOptions(
+        kwargs = dict(
             cwd=CFG["agent_dir"],
             model=self.model,
             system_prompt={"type": "preset", "preset": "claude_code",
@@ -63,6 +67,12 @@ class ClaudeBrain(AgentCore):
             skills=CFG["visible_skills"],
             resume=resume_id,
         )
+        # The Python Agent SDK bundles a Claude CLI, but when the shell has
+        # provisioned an official native Claude Code binary we pin to it so
+        # provenance, authentication, and upgrades are operator-visible.
+        if self.binary:
+            kwargs["cli_path"] = self.binary
+        return ClaudeAgentOptions(**kwargs)
 
     async def start(self):
         resume, self._resume_id = self._resume_id, None
