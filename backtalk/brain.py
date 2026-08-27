@@ -5,6 +5,9 @@
 `main.py` still imports WarmBrain. WarmBrain delegates to the runtime selected
 by `core.provider`, or to an explicit drop-in class selected by `core.adapter`.
 Audio and UI code never needs provider branches.
+
+Portable memory is integrated here, above every provider adapter. That keeps
+memory shell-owned and makes future core swaps inherit the same memory contract.
 """
 from __future__ import annotations
 
@@ -12,6 +15,8 @@ import os
 
 from backtalk.config import CFG
 from backtalk.core_registry import load_core_class, normalize_provider
+from backtalk.memory_bridge import post_turn as memory_post_turn
+from backtalk.memory_bridge import pre_turn as memory_pre_turn
 
 _CORE_CFG = CFG.get("core") or {}
 PROVIDER = normalize_provider(_CORE_CFG.get("provider") or "claude")
@@ -65,8 +70,32 @@ class WarmBrain:
         return await self._impl.start()
 
     async def ask_stream(self, utterance: str):
-        async for item in self._impl.ask_stream(utterance):
-            yield item
+        memory = memory_pre_turn(utterance)
+        memory_context = str(memory.get("prompt_context") or "").strip()
+        provider_utterance = utterance
+        if memory_context:
+            provider_utterance = (
+                utterance
+                + "\n\n---\n"
+                + memory_context
+                + "\n---\n"
+                + "Use the memory context only under its stated evidence gates. "
+                  "If relevant memory is unverified or disputed, ask the user to confirm it before relying on it. "
+                  "Do not claim an unresolved primary domain as fact."
+            )
+
+        response_parts: list[str] = []
+        completed = False
+        try:
+            async for item in self._impl.ask_stream(provider_utterance):
+                response_parts.append(str(item))
+                yield item
+            completed = True
+        finally:
+            # Capture only completed turns. Interrupted or failed provider turns must
+            # not create durable candidates from a partial interaction.
+            if completed:
+                memory_post_turn(utterance, " ".join(response_parts))
 
     async def interrupt(self):
         return await self._impl.interrupt()
